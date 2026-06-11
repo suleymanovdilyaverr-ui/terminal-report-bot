@@ -416,7 +416,7 @@ def build_admin_summary(period: str) -> str:
 📉 Всего удержано:
 <b>{format_money(withheld_sum)}</b>
 
-✅ Итого к сдаче:
+💵 <b>НА РУКАХ:</b>:
 <b>{format_money(final_sum)}</b>
 
 ━━━━━━━━━━━━━━
