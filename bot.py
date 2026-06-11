@@ -28,7 +28,11 @@ ADMIN_IDS_RAW = os.getenv("ADMIN_IDS", "").strip()
 
 ADMIN_IDS = set()
 if ADMIN_IDS_RAW:
-    ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
+    ADMIN_IDS = {
+        int(x.strip())
+        for x in ADMIN_IDS_RAW.split(",")
+        if x.strip().isdigit()
+    }
 
 DB_PATH = "reports.db"
 
@@ -182,6 +186,7 @@ def parse_additional(text: str):
             continue
 
         match = re.search(r"(.+?)[\s:—-]+([\d\s.,]+)\s*₽?$", part)
+
         if not match:
             continue
 
@@ -216,9 +221,17 @@ def build_report(data: dict, sender_name: str) -> tuple[str, dict]:
 
     salary = data["salary"]
 
-    additional_items, additional_total, additional_text = parse_additional(data.get("additional", "нет"))
+    additional_items, additional_total, additional_text = parse_additional(
+        data.get("additional", "нет")
+    )
 
-    withheld_total = change_100_added + change_1000_added + salary + additional_total
+    withheld_total = (
+        change_100_added
+        + change_1000_added
+        + salary
+        + additional_total
+    )
+
     final_amount = total_amount - withheld_total
 
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -256,7 +269,7 @@ def build_report(data: dict, sender_name: str) -> tuple[str, dict]:
 • ЗП: {format_money(salary)}
 • Доп. расходы: {format_money(additional_total)}
 
-✅ <b>ИТОГО К СДАЧЕ:</b>
+💵 <b>НА РУКАХ:</b>
 <b>{format_money(final_amount)}</b>
 
 👤 <b>Отчет отправил:</b> {sender_name}
@@ -371,6 +384,7 @@ def build_admin_summary(period: str) -> str:
         FROM reports
         WHERE created_at >= ?
     """, (start_text,))
+
     count, total_sum, withheld_sum, final_sum = cur.fetchone()
 
     cur.execute("""
@@ -381,6 +395,7 @@ def build_admin_summary(period: str) -> str:
         ORDER BY SUM(final_amount) DESC
         LIMIT 10
     """, (start_text,))
+
     terminals = cur.fetchall()
 
     cur.execute("""
@@ -391,6 +406,7 @@ def build_admin_summary(period: str) -> str:
         ORDER BY SUM(final_amount) DESC
         LIMIT 10
     """, (start_text,))
+
     users = cur.fetchall()
 
     conn.close()
@@ -416,7 +432,7 @@ def build_admin_summary(period: str) -> str:
 📉 Всего удержано:
 <b>{format_money(withheld_sum)}</b>
 
-💵 <b>НА РУКАХ:</b>:
+💵 <b>НА РУКАХ:</b>
 <b>{format_money(final_sum)}</b>
 
 ━━━━━━━━━━━━━━
@@ -466,12 +482,22 @@ async def ask_step(message: Message, state: FSMContext, step: str):
 
 async def go_back(message: Message, state: FSMContext):
     data = await state.get_data()
-    current_step = data.get("current_step", "terminal")
+    current_step = data.get("current_step")
+
+    if not current_step:
+        await message.answer(
+            "Сейчас нет активного отчета. Нажмите «📊 Новый отчет».",
+            reply_markup=start_keyboard()
+        )
+        return
 
     current_index = STEPS.index(current_step)
 
     if current_index == 0:
-        await message.answer("Вы уже на первом шаге.", reply_markup=main_keyboard())
+        await message.answer(
+            "Вы уже на первом вопросе.",
+            reply_markup=main_keyboard()
+        )
         return
 
     previous_step = STEPS[current_index - 1]
@@ -486,19 +512,30 @@ async def process_step(message: Message, state: FSMContext, step: str, value):
     if current_index + 1 >= len(STEPS):
         data = await state.get_data()
 
-        user_name = message.from_user.full_name or message.from_user.username or "Неизвестно"
+        user_name = (
+            message.from_user.full_name
+            or message.from_user.username
+            or "Неизвестно"
+        )
         user_id = message.from_user.id
 
         report, db_data = build_report(data, user_name)
         save_report(db_data, user_id, user_name)
 
         target_chat_id = int(REPORT_CHAT_ID) if REPORT_CHAT_ID else message.chat.id
+
         await bot.send_message(chat_id=target_chat_id, text=report)
 
         if REPORT_CHAT_ID:
-            await message.answer("✅ Отчет отправлен в группу.", reply_markup=start_keyboard())
+            await message.answer(
+                "✅ Отчет отправлен в группу.",
+                reply_markup=start_keyboard()
+            )
         else:
-            await message.answer("✅ Отчет сохранен.", reply_markup=start_keyboard())
+            await message.answer(
+                "✅ Отчет сохранен.",
+                reply_markup=start_keyboard()
+            )
 
         await state.clear()
         return
@@ -518,21 +555,40 @@ async def start(message: Message, state: FSMContext):
 
 @dp.message(Command("myid"))
 async def myid(message: Message):
-    await message.answer(f"Ваш Telegram ID:\n<code>{message.from_user.id}</code>")
+    await message.answer(
+        f"Ваш Telegram ID:\n<code>{message.from_user.id}</code>"
+    )
 
 
 @dp.message(Command("chatid"))
 async def chatid(message: Message):
-    await message.answer(f"ID этого чата:\n<code>{message.chat.id}</code>")
+    await message.answer(
+        f"ID этого чата:\n<code>{message.chat.id}</code>"
+    )
+
+
+@dp.message(Command("cancel"))
+async def full_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "❌ Отчет полностью отменен.",
+        reply_markup=start_keyboard()
+    )
 
 
 @dp.message(Command("admin"))
 async def admin_command(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("⛔ У вас нет доступа к админ-панели.\n\nУзнайте свой ID через /myid и добавьте его в ADMIN_IDS.")
+        await message.answer(
+            "⛔ У вас нет доступа к админ-панели.\n\n"
+            "Узнайте свой ID через /myid и добавьте его в ADMIN_IDS."
+        )
         return
 
-    await message.answer("👨‍💼 <b>Админ панель</b>\n\nВыберите период:", reply_markup=admin_keyboard())
+    await message.answer(
+        "👨‍💼 <b>Админ панель</b>\n\nВыберите период:",
+        reply_markup=admin_keyboard()
+    )
 
 
 @dp.message(F.text == "👨‍💼 Админ панель")
@@ -547,9 +603,8 @@ async def new_report(message: Message, state: FSMContext):
 
 
 @dp.message(F.text == "❌ Отмена")
-async def cancel_report(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Отчет отменен.", reply_markup=start_keyboard())
+async def cancel_button_go_back(message: Message, state: FSMContext):
+    await go_back(message, state)
 
 
 @dp.message(F.text == "⬅️ Назад")
