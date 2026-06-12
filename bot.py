@@ -95,6 +95,17 @@ QUESTION_BY_STEP = {
     ),
 }
 
+FIELD_NAMES = {
+    "terminal": "🏧 Терминал",
+    "total_amount": "💰 Общая сумма",
+    "change_100_before": "💵 100 ₽ было",
+    "change_100_added": "💵 100 ₽ добавили",
+    "change_1000_before": "💸 1000 ₽ было",
+    "change_1000_added": "💸 1000 ₽ добавили",
+    "salary": "👤 ЗП себе",
+    "additional": "📝 Дополнительно",
+}
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -118,9 +129,15 @@ def init_db():
             final_amount INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
             user_name TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            deleted INTEGER DEFAULT 0
         )
     """)
+
+    try:
+        cur.execute("ALTER TABLE reports ADD COLUMN deleted INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -145,6 +162,46 @@ def start_keyboard():
     )
 
 
+def confirm_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Отправить", callback_data="confirm_send"),
+                InlineKeyboardButton(text="✏️ Исправить", callback_data="confirm_edit"),
+            ],
+            [
+                InlineKeyboardButton(text="❌ Полностью отменить", callback_data="confirm_cancel")
+            ],
+        ]
+    )
+
+
+def edit_fields_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🏧 Терминал", callback_data="edit_terminal"),
+                InlineKeyboardButton(text="💰 Общая сумма", callback_data="edit_total_amount"),
+            ],
+            [
+                InlineKeyboardButton(text="💵 100 было", callback_data="edit_change_100_before"),
+                InlineKeyboardButton(text="💵 100 добавили", callback_data="edit_change_100_added"),
+            ],
+            [
+                InlineKeyboardButton(text="💸 1000 было", callback_data="edit_change_1000_before"),
+                InlineKeyboardButton(text="💸 1000 добавили", callback_data="edit_change_1000_added"),
+            ],
+            [
+                InlineKeyboardButton(text="👤 ЗП", callback_data="edit_salary"),
+                InlineKeyboardButton(text="📝 Дополнительно", callback_data="edit_additional"),
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад к проверке", callback_data="back_to_preview")
+            ],
+        ]
+    )
+
+
 def admin_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -156,6 +213,22 @@ def admin_keyboard():
                 InlineKeyboardButton(text="🗓 Месяц", callback_data="admin_month"),
                 InlineKeyboardButton(text="📋 Последние 10", callback_data="admin_last10"),
             ],
+            [
+                InlineKeyboardButton(text="🏧 По терминалу", callback_data="admin_terminal_help"),
+            ],
+        ]
+    )
+
+
+def report_delete_keyboard(report_id: int):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🗑 Удалить отчет",
+                    callback_data=f"delete_report_{report_id}"
+                )
+            ]
         ]
     )
 
@@ -207,7 +280,7 @@ def parse_additional(text: str):
     return result, total, text_result
 
 
-def build_report(data: dict, sender_name: str) -> tuple[str, dict]:
+def calculate_report(data: dict) -> dict:
     terminal = data["terminal"]
     total_amount = data["total_amount"]
 
@@ -221,7 +294,7 @@ def build_report(data: dict, sender_name: str) -> tuple[str, dict]:
 
     salary = data["salary"]
 
-    additional_items, additional_total, additional_text = parse_additional(
+    _, additional_total, additional_text = parse_additional(
         data.get("additional", "нет")
     )
 
@@ -234,49 +307,7 @@ def build_report(data: dict, sender_name: str) -> tuple[str, dict]:
 
     final_amount = total_amount - withheld_total
 
-    now = datetime.now().strftime("%d.%m.%Y %H:%M")
-    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    report = f"""
-📊 <b>ОТЧЕТ ПО ТЕРМИНАЛУ</b>
-
-🏧 <b>Терминал:</b> {terminal}
-
-💰 <b>Общая сумма:</b>
-{format_money(total_amount)}
-
-💵 <b>Сдача по 100 ₽</b>
-Было: {format_money(change_100_before)}
-Добавлено: {format_money(change_100_added)}
-Стало: {format_money(change_100_after)}
-
-💸 <b>Сдача по 1000 ₽</b>
-Было: {format_money(change_1000_before)}
-Добавлено: {format_money(change_1000_added)}
-Стало: {format_money(change_1000_after)}
-
-👤 <b>ЗП себе:</b>
-{format_money(salary)}
-
-📝 <b>Дополнительно:</b>
-{additional_text}
-
-━━━━━━━━━━━━━━
-
-📉 <b>Удержано:</b>
-• Сдача 100 ₽: {format_money(change_100_added)}
-• Сдача 1000 ₽: {format_money(change_1000_added)}
-• ЗП: {format_money(salary)}
-• Доп. расходы: {format_money(additional_total)}
-
-💵 <b>НА РУКАХ:</b>
-<b>{format_money(final_amount)}</b>
-
-👤 <b>Отчет отправил:</b> {sender_name}
-🕒 {now}
-""".strip()
-
-    db_data = {
+    return {
         "terminal": terminal,
         "total_amount": total_amount,
         "change_100_before": change_100_before,
@@ -290,15 +321,59 @@ def build_report(data: dict, sender_name: str) -> tuple[str, dict]:
         "additional_total": additional_total,
         "withheld_total": withheld_total,
         "final_amount": final_amount,
-        "created_at": created_at,
     }
 
-    return report, db_data
+
+def build_report_text(calc: dict, sender_name: str, report_id: int | None = None) -> str:
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    report_number = f"📄 <b>Отчет №{report_id}</b>\n\n" if report_id else ""
+
+    return f"""
+{report_number}📊 <b>ОТЧЕТ ПО ТЕРМИНАЛУ</b>
+
+🏧 <b>Терминал:</b> {calc["terminal"]}
+
+💰 <b>Общая сумма:</b>
+{format_money(calc["total_amount"])}
+
+💵 <b>Сдача по 100 ₽</b>
+Было: {format_money(calc["change_100_before"])}
+Добавлено: {format_money(calc["change_100_added"])}
+Стало: {format_money(calc["change_100_after"])}
+
+💸 <b>Сдача по 1000 ₽</b>
+Было: {format_money(calc["change_1000_before"])}
+Добавлено: {format_money(calc["change_1000_added"])}
+Стало: {format_money(calc["change_1000_after"])}
+
+👤 <b>ЗП себе:</b>
+{format_money(calc["salary"])}
+
+📝 <b>Дополнительно:</b>
+{calc["additional_text"]}
+
+━━━━━━━━━━━━━━
+
+📉 <b>Удержано:</b>
+• Сдача 100 ₽: {format_money(calc["change_100_added"])}
+• Сдача 1000 ₽: {format_money(calc["change_1000_added"])}
+• ЗП: {format_money(calc["salary"])}
+• Доп. расходы: {format_money(calc["additional_total"])}
+
+💵 <b>НА РУКАХ:</b>
+<b>{format_money(calc["final_amount"])}</b>
+
+👤 <b>Отчет отправил:</b> {sender_name}
+🕒 {now}
+""".strip()
 
 
-def save_report(db_data: dict, user_id: int, user_name: str):
+def save_report(calc: dict, user_id: int, user_name: str) -> int:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
+
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     cur.execute("""
         INSERT INTO reports (
@@ -317,26 +392,44 @@ def save_report(db_data: dict, user_id: int, user_name: str):
             final_amount,
             user_id,
             user_name,
-            created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            created_at,
+            deleted
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     """, (
-        db_data["terminal"],
-        db_data["total_amount"],
-        db_data["change_100_before"],
-        db_data["change_100_added"],
-        db_data["change_100_after"],
-        db_data["change_1000_before"],
-        db_data["change_1000_added"],
-        db_data["change_1000_after"],
-        db_data["salary"],
-        db_data["additional_text"],
-        db_data["additional_total"],
-        db_data["withheld_total"],
-        db_data["final_amount"],
+        calc["terminal"],
+        calc["total_amount"],
+        calc["change_100_before"],
+        calc["change_100_added"],
+        calc["change_100_after"],
+        calc["change_1000_before"],
+        calc["change_1000_added"],
+        calc["change_1000_after"],
+        calc["salary"],
+        calc["additional_text"],
+        calc["additional_total"],
+        calc["withheld_total"],
+        calc["final_amount"],
         user_id,
         user_name,
-        db_data["created_at"],
+        created_at,
     ))
+
+    report_id = cur.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return report_id
+
+
+def mark_report_deleted(report_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute(
+        "UPDATE reports SET deleted = 1 WHERE id = ?",
+        (report_id,)
+    )
 
     conn.commit()
     conn.close()
@@ -382,7 +475,7 @@ def build_admin_summary(period: str) -> str:
             COALESCE(SUM(withheld_total), 0),
             COALESCE(SUM(final_amount), 0)
         FROM reports
-        WHERE created_at >= ?
+        WHERE created_at >= ? AND deleted = 0
     """, (start_text,))
 
     count, total_sum, withheld_sum, final_sum = cur.fetchone()
@@ -390,7 +483,7 @@ def build_admin_summary(period: str) -> str:
     cur.execute("""
         SELECT terminal, COALESCE(SUM(final_amount), 0)
         FROM reports
-        WHERE created_at >= ?
+        WHERE created_at >= ? AND deleted = 0
         GROUP BY terminal
         ORDER BY SUM(final_amount) DESC
         LIMIT 10
@@ -401,7 +494,7 @@ def build_admin_summary(period: str) -> str:
     cur.execute("""
         SELECT user_name, COALESCE(SUM(final_amount), 0)
         FROM reports
-        WHERE created_at >= ?
+        WHERE created_at >= ? AND deleted = 0
         GROUP BY user_name
         ORDER BY SUM(final_amount) DESC
         LIMIT 10
@@ -450,8 +543,9 @@ def build_last10_reports() -> str:
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT terminal, final_amount, user_name, created_at
+        SELECT id, terminal, final_amount, user_name, created_at
         FROM reports
+        WHERE deleted = 0
         ORDER BY id DESC
         LIMIT 10
     """)
@@ -464,14 +558,176 @@ def build_last10_reports() -> str:
 
     text = "📋 <b>ПОСЛЕДНИЕ 10 ОТЧЕТОВ</b>\n\n"
 
-    for terminal, final_amount, user_name, created_at in rows:
+    for report_id, terminal, final_amount, user_name, created_at in rows:
         text += (
+            f"📄 №{report_id}\n"
             f"🏧 {terminal} — <b>{format_money(final_amount)}</b>\n"
             f"👤 {user_name}\n"
             f"🕒 {created_at}\n\n"
         )
 
     return text.strip()
+
+
+def build_terminal_summary(terminal: str) -> str:
+    start = get_period_start("month")
+    start_text = start.strftime("%Y-%m-%d %H:%M:%S")
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT 
+            COUNT(id),
+            COALESCE(SUM(total_amount), 0),
+            COALESCE(SUM(withheld_total), 0),
+            COALESCE(SUM(final_amount), 0)
+        FROM reports
+        WHERE terminal = ? AND created_at >= ? AND deleted = 0
+    """, (terminal, start_text))
+
+    count, total_sum, withheld_sum, final_sum = cur.fetchone()
+
+    cur.execute("""
+        SELECT id, final_amount, user_name, created_at
+        FROM reports
+        WHERE terminal = ? AND created_at >= ? AND deleted = 0
+        ORDER BY id DESC
+        LIMIT 10
+    """, (terminal, start_text))
+
+    rows = cur.fetchall()
+
+    conn.close()
+
+    last_text = "\n".join(
+        f"• №{report_id} — {format_money(final_amount)} — {user_name} — {created_at}"
+        for report_id, final_amount, user_name, created_at in rows
+    ) or "• Нет отчетов"
+
+    return f"""
+🏧 <b>ОТЧЕТ ПО ТЕРМИНАЛУ: {terminal}</b>
+
+Период: текущий месяц
+
+📌 Количество отчетов: <b>{count}</b>
+
+💰 Общая сумма:
+<b>{format_money(total_sum)}</b>
+
+📉 Всего удержано:
+<b>{format_money(withheld_sum)}</b>
+
+💵 <b>НА РУКАХ:</b>
+<b>{format_money(final_sum)}</b>
+
+━━━━━━━━━━━━━━
+
+📋 <b>Последние отчеты:</b>
+{last_text}
+""".strip()
+
+
+def get_report_by_id(report_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT 
+            id,
+            terminal,
+            total_amount,
+            change_100_before,
+            change_100_added,
+            change_100_after,
+            change_1000_before,
+            change_1000_added,
+            change_1000_after,
+            salary,
+            additional_text,
+            additional_total,
+            withheld_total,
+            final_amount,
+            user_name,
+            created_at,
+            deleted
+        FROM reports
+        WHERE id = ?
+    """, (report_id,))
+
+    row = cur.fetchone()
+    conn.close()
+
+    return row
+
+
+def build_report_from_db(report_id: int) -> str:
+    row = get_report_by_id(report_id)
+
+    if not row:
+        return "❌ Отчет не найден."
+
+    (
+        rid,
+        terminal,
+        total_amount,
+        change_100_before,
+        change_100_added,
+        change_100_after,
+        change_1000_before,
+        change_1000_added,
+        change_1000_after,
+        salary,
+        additional_text,
+        additional_total,
+        withheld_total,
+        final_amount,
+        user_name,
+        created_at,
+        deleted,
+    ) = row
+
+    if deleted:
+        return f"🗑 Отчет №{rid} удален."
+
+    return f"""
+📄 <b>ОТЧЕТ №{rid}</b>
+
+🏧 <b>Терминал:</b> {terminal}
+
+💰 <b>Общая сумма:</b>
+{format_money(total_amount)}
+
+💵 <b>Сдача по 100 ₽</b>
+Было: {format_money(change_100_before)}
+Добавлено: {format_money(change_100_added)}
+Стало: {format_money(change_100_after)}
+
+💸 <b>Сдача по 1000 ₽</b>
+Было: {format_money(change_1000_before)}
+Добавлено: {format_money(change_1000_added)}
+Стало: {format_money(change_1000_after)}
+
+👤 <b>ЗП себе:</b>
+{format_money(salary)}
+
+📝 <b>Дополнительно:</b>
+{additional_text}
+
+━━━━━━━━━━━━━━
+
+📉 <b>Удержано:</b>
+• Сдача 100 ₽: {format_money(change_100_added)}
+• Сдача 1000 ₽: {format_money(change_1000_added)}
+• ЗП: {format_money(salary)}
+• Доп. расходы: {format_money(additional_total)}
+
+💵 <b>НА РУКАХ:</b>
+<b>{format_money(final_amount)}</b>
+
+👤 <b>Отчет отправил:</b> {user_name}
+🕒 {created_at}
+""".strip()
 
 
 async def ask_step(message: Message, state: FSMContext, step: str):
@@ -504,40 +760,38 @@ async def go_back(message: Message, state: FSMContext):
     await ask_step(message, state, previous_step)
 
 
+async def show_preview(message: Message, state: FSMContext):
+    data = await state.get_data()
+
+    user_name = (
+        message.from_user.full_name
+        or message.from_user.username
+        or "Неизвестно"
+    )
+
+    calc = calculate_report(data)
+    preview = build_report_text(calc, user_name, report_id=None)
+
+    await message.answer(
+        "📋 <b>Проверьте отчет перед отправкой:</b>\n\n" + preview,
+        reply_markup=confirm_keyboard()
+    )
+
+
 async def process_step(message: Message, state: FSMContext, step: str, value):
     await state.update_data(**{step: value})
+
+    data = await state.get_data()
+
+    if data.get("edit_mode"):
+        await state.update_data(edit_mode=False, editing_field=None)
+        await show_preview(message, state)
+        return
 
     current_index = STEPS.index(step)
 
     if current_index + 1 >= len(STEPS):
-        data = await state.get_data()
-
-        user_name = (
-            message.from_user.full_name
-            or message.from_user.username
-            or "Неизвестно"
-        )
-        user_id = message.from_user.id
-
-        report, db_data = build_report(data, user_name)
-        save_report(db_data, user_id, user_name)
-
-        target_chat_id = int(REPORT_CHAT_ID) if REPORT_CHAT_ID else message.chat.id
-
-        await bot.send_message(chat_id=target_chat_id, text=report)
-
-        if REPORT_CHAT_ID:
-            await message.answer(
-                "✅ Отчет отправлен в группу.",
-                reply_markup=start_keyboard()
-            )
-        else:
-            await message.answer(
-                "✅ Отчет сохранен.",
-                reply_markup=start_keyboard()
-            )
-
-        await state.clear()
+        await show_preview(message, state)
         return
 
     next_step = STEPS[current_index + 1]
@@ -591,6 +845,42 @@ async def admin_command(message: Message):
     )
 
 
+@dp.message(Command("terminal"))
+async def terminal_command(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+
+    if len(parts) < 2:
+        await message.answer(
+            "Напишите так:\n<code>/terminal Т-15</code>"
+        )
+        return
+
+    terminal = parts[1].strip()
+    await message.answer(build_terminal_summary(terminal))
+
+
+@dp.message(Command("report"))
+async def report_command(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет доступа.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer(
+            "Напишите так:\n<code>/report 154</code>"
+        )
+        return
+
+    report_id = int(parts[1].strip())
+    await message.answer(build_report_from_db(report_id))
+
+
 @dp.message(F.text == "👨‍💼 Админ панель")
 async def admin_button(message: Message):
     await admin_command(message)
@@ -612,6 +902,103 @@ async def back_button(message: Message, state: FSMContext):
     await go_back(message, state)
 
 
+@dp.callback_query(F.data == "confirm_send")
+async def confirm_send(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+
+    user_name = (
+        callback.from_user.full_name
+        or callback.from_user.username
+        or "Неизвестно"
+    )
+    user_id = callback.from_user.id
+
+    calc = calculate_report(data)
+    report_id = save_report(calc, user_id, user_name)
+
+    report_text = build_report_text(calc, user_name, report_id=report_id)
+
+    target_chat_id = int(REPORT_CHAT_ID) if REPORT_CHAT_ID else callback.message.chat.id
+
+    await bot.send_message(
+        chat_id=target_chat_id,
+        text=report_text,
+        reply_markup=report_delete_keyboard(report_id)
+    )
+
+    await callback.message.answer(
+        f"✅ Отчет №{report_id} отправлен.",
+        reply_markup=start_keyboard()
+    )
+
+    await state.clear()
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "confirm_edit")
+async def confirm_edit(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "✏️ <b>Что нужно исправить?</b>",
+        reply_markup=edit_fields_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_preview")
+async def back_to_preview(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+
+    user_name = (
+        callback.from_user.full_name
+        or callback.from_user.username
+        or "Неизвестно"
+    )
+
+    calc = calculate_report(data)
+    preview = build_report_text(calc, user_name, report_id=None)
+
+    await callback.message.edit_text(
+        "📋 <b>Проверьте отчет перед отправкой:</b>\n\n" + preview,
+        reply_markup=confirm_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "confirm_cancel")
+async def confirm_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.answer(
+        "❌ Отчет полностью отменен.",
+        reply_markup=start_keyboard()
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data.startswith("edit_"))
+async def edit_field_callback(callback: CallbackQuery, state: FSMContext):
+    field = callback.data.replace("edit_", "")
+
+    if field not in STATE_BY_STEP:
+        await callback.answer("Неизвестное поле", show_alert=True)
+        return
+
+    await state.update_data(
+        current_step=field,
+        edit_mode=True,
+        editing_field=field
+    )
+
+    await state.set_state(STATE_BY_STEP[field])
+
+    await callback.message.answer(
+        f"✏️ Исправляем: <b>{FIELD_NAMES[field]}</b>\n\n"
+        f"{QUESTION_BY_STEP[field]}",
+        reply_markup=main_keyboard()
+    )
+
+    await callback.answer()
+
+
 @dp.callback_query(F.data.startswith("admin_"))
 async def admin_callback(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -631,6 +1018,44 @@ async def admin_callback(callback: CallbackQuery):
         await callback.message.edit_text(text, reply_markup=admin_keyboard())
         await callback.answer()
         return
+
+    if action == "terminal_help":
+        await callback.message.edit_text(
+            "🏧 <b>Отчет по терминалу</b>\n\n"
+            "Напишите команду:\n"
+            "<code>/terminal Т-15</code>\n\n"
+            "Пример:\n"
+            "<code>/terminal Т-15</code>",
+            reply_markup=admin_keyboard()
+        )
+        await callback.answer()
+        return
+
+
+@dp.callback_query(F.data.startswith("delete_report_"))
+async def delete_report_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Удалять отчеты может только админ.", show_alert=True)
+        return
+
+    report_id_text = callback.data.replace("delete_report_", "")
+
+    if not report_id_text.isdigit():
+        await callback.answer("Ошибка номера отчета.", show_alert=True)
+        return
+
+    report_id = int(report_id_text)
+    mark_report_deleted(report_id)
+
+    try:
+        await callback.message.edit_text(
+            f"🗑 <b>Отчет №{report_id} удален администратором.</b>\n\n"
+            f"👤 Удалил: {callback.from_user.full_name}"
+        )
+    except Exception:
+        pass
+
+    await callback.answer("Отчет удален.")
 
 
 @dp.message(ReportForm.terminal)
